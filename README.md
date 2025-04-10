@@ -74,10 +74,41 @@ uploaded = files.upload()  # Upload your kaggle.json file
 !chmod 600 /root/.kaggle/kaggle.json
 ```
 
-### 2. Create separated download and process scripts
+### 2. Download the dataset using kagglehub (Recommended Method)
 
-Since the dataset download might time out in Colab, let's create separate scripts for download and processing:
+```python
+# Install kagglehub
+!pip install kagglehub
 
+# Download the dataset - this method often works more reliably than the standard Kaggle API
+import kagglehub
+import os
+import shutil
+from pathlib import Path
+
+# Create raw data directory
+RAW_DIR = Path('data/raw')
+RAW_DIR.mkdir(parents=True, exist_ok=True)
+
+print("Downloading ISL dataset using kagglehub...")
+path = kagglehub.dataset_download("drblack00/isl-csltr-indian-sign-language-dataset")
+
+print(f"Dataset downloaded to: {path}")
+
+# Copy contents to your project's raw data directory
+for item in Path(path).glob('*'):
+    dest_path = RAW_DIR / item.name
+    if item.is_dir():
+        shutil.copytree(item, dest_path, dirs_exist_ok=True)
+    else:
+        shutil.copy2(item, dest_path)
+
+print("Dataset copied to project directory.")
+```
+
+### 3. Alternative download methods (if kagglehub doesn't work)
+
+Option 1: Use the separated download script with retry logic:
 ```python
 %%writefile download_isl_dataset.py
 import os
@@ -140,6 +171,24 @@ if __name__ == "__main__":
         print("Try manually downloading from: https://www.kaggle.com/datasets/drblack00/isl-csltr-indian-sign-language-dataset")
 ```
 
+Option 2: Manual download and upload:
+```python
+# If download keeps failing, manually download from Kaggle and upload to Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Create directory
+!mkdir -p data/raw
+
+# Copy from Drive (adjust path to your uploaded file location)
+!cp /content/drive/MyDrive/path/to/isl-csltr-indian-sign-language-dataset.zip data/raw/
+
+# Extract
+!unzip data/raw/isl-csltr-indian-sign-language-dataset.zip -d data/raw/
+```
+```
+
+This should provide a more reliable method of downloading the dataset in Google Colab with the T4 GPU. The kagglehub approach is simpler and often more dependable than the standard Kaggle API.
 Now create the processing script:
 
 ```python

@@ -74,47 +74,235 @@ uploaded = files.upload()  # Upload your kaggle.json file
 !chmod 600 /root/.kaggle/kaggle.json
 ```
 
-### 2. Create the preparation scripts
+### 2. Create separated download and process scripts
 
-Create `prepare_isl_dataset_fairseq.py`:
-
-```python
-%%writefile prepare_isl_dataset_fairseq.py
-# Paste the entire content of scripts/prepare_isl_dataset_fairseq.py here
-# (The full script contains 442 lines, so it's not included here for brevity)
-```
-
-Create `train_spm.py`:
+Since the dataset download might time out in Colab, let's create separate scripts for download and processing:
 
 ```python
-%%writefile train_spm.py
-# Paste the entire content of scripts/train_spm.py here
+%%writefile download_isl_dataset.py
+import os
+import time
+import subprocess
+import kaggle
+from pathlib import Path
+
+# Create raw data directory
+RAW_DIR = Path('data/raw')
+RAW_DIR.mkdir(parents=True, exist_ok=True)
+
+def download_with_retry():
+    """Download the dataset with retry logic"""
+    max_retries = 3
+    retry_delay = 5  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            print(f"Download attempt {attempt+1}/{max_retries}...")
+            
+            # Authenticate with Kaggle
+            kaggle.api.authenticate()
+            
+            # Download in smaller chunks if possible
+            dataset_slug = 'drblack00/isl-csltr-indian-sign-language-dataset'
+            
+            # Try to use the kaggle CLI directly instead of the API
+            cmd = f"kaggle datasets download {dataset_slug} -p {RAW_DIR} --unzip"
+            
+            # Run with timeout
+            process = subprocess.run(
+                cmd, 
+                shell=True,
+                timeout=600  # 10 minute timeout
+            )
+            
+            if process.returncode == 0:
+                print("Download completed successfully!")
+                return True
+                
+        except subprocess.TimeoutExpired:
+            print(f"Download timed out on attempt {attempt+1}")
+        except Exception as e:
+            print(f"Error during download: {e}")
+        
+        print(f"Retrying in {retry_delay} seconds...")
+        time.sleep(retry_delay)
+    
+    return False
+
+if __name__ == "__main__":
+    success = download_with_retry()
+    
+    if success:
+        print("Dataset downloaded successfully. Now you can run:")
+        print("python process_isl_dataset.py")
+    else:
+        print("Failed to download the dataset after multiple attempts.")
+        print("Try manually downloading from: https://www.kaggle.com/datasets/drblack00/isl-csltr-indian-sign-language-dataset")
 ```
 
-Create `mediapipe_config.yaml`:
+Now create the processing script:
 
 ```python
-%%writefile mediapipe_config.yaml
-modality: MEDIAPIPE
-process_steps:
-  - type: instance_normalize
-  # Optional: Subsample frames if sequences are too long
-  # - type: subsample
-  #   rate: 2
+%%writefile process_isl_dataset.py
+# Same as prepare_isl_dataset_fairseq.py but without the download functionality
+
+import os
+import pandas as pd
+import json
+import cv2
+import numpy as np
+from pathlib import Path
+from tqdm import tqdm
+import shutil
+import mediapipe as mp
+import argparse
+
+# MediaPipe initialization
+mp_holistic = mp.solutions.holistic
+mp_drawing = mp.solutions.drawing_utils
+
+# Create necessary directories
+DATASET_DIR = Path('data/isl_dataset')
+PROCESSED_DIR = Path('data/processed')
+RAW_DIR = Path('data/raw')
+FEATURES_DIR = Path('data/features/mediapipe')
+
+for dir_path in [DATASET_DIR, PROCESSED_DIR, RAW_DIR, FEATURES_DIR]:
+    dir_path.mkdir(parents=True, exist_ok=True)
+
+# Extract MediaPipe features from video frames
+def extract_mediapipe_features(image_path):
+    # Implementation from the original script
+    image = cv2.imread(str(image_path))
+    if image is None:
+        return None
+    
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
+    with mp_holistic.Holistic(
+        static_image_mode=True,
+        model_complexity=2,
+        enable_segmentation=False,
+        refine_face_landmarks=True
+    ) as holistic:
+        results = holistic.process(image)
+        
+        # Extract keypoints
+        pose = []
+        if results.pose_landmarks:
+            for landmark in results.pose_landmarks.landmark:
+                pose.extend([landmark.x, landmark.y, landmark.z, landmark.visibility])
+        else:
+            # Fill with zeros if no landmarks detected
+            pose = [0.0] * (33 * 4)  # 33 landmarks with x,y,z,visibility
+        
+        face = []
+        if results.face_landmarks:
+            for landmark in results.face_landmarks.landmark:
+                face.extend([landmark.x, landmark.y, landmark.z])
+        else:
+            face = [0.0] * (478 * 3)  # 478 landmarks with x,y,z
+        
+        left_hand = []
+        if results.left_hand_landmarks:
+            for landmark in results.left_hand_landmarks.landmark:
+                left_hand.extend([landmark.x, landmark.y, landmark.z])
+        else:
+            left_hand = [0.0] * (21 * 3)  # 21 landmarks with x,y,z
+        
+        right_hand = []
+        if results.right_hand_landmarks:
+            for landmark in results.right_hand_landmarks.landmark:
+                right_hand.extend([landmark.x, landmark.y, landmark.z])
+        else:
+            right_hand = [0.0] * (21 * 3)  # 21 landmarks with x,y,z
+        
+        # Combine all features
+        keypoints = pose + face + left_hand + right_hand
+        return np.array(keypoints, dtype=np.float32)
+
+# Process word-level and sentence-level data functions from original script
+# ...
+
+# Process dataset function from original script
+def process_dataset():
+    print("Processing ISL dataset...")
+    
+    # Check for dataset paths
+    corpus_dir = RAW_DIR / 'ISL_CSLRT_Corpus'
+    if not corpus_dir.exists():
+        potential_paths = list(RAW_DIR.glob('*'))
+        for path in potential_paths:
+            if 'ISL' in path.name and path.is_dir():
+                corpus_dir = path
+                break
+        if not corpus_dir.exists():
+            raise FileNotFoundError("Could not find ISL_CSLRT_Corpus directory. Please ensure dataset is downloaded.")
+    
+    # Process metadata files
+    metadata_dir = corpus_dir / 'corpus_csv_files'
+    word_details_path = next(metadata_dir.glob('*word_details*'), None)
+    sentence_details_path = next(metadata_dir.glob('*frame_details*'), None)
+    
+    # Create word-level dataset
+    word_frames_dir = corpus_dir / 'Frames_Word_Level'
+    if word_frames_dir.exists() and word_details_path:
+        process_word_level(word_frames_dir, word_details_path)
+    else:
+        print("Word level data not found or metadata missing")
+    
+    # Create sentence-level dataset
+    sentence_frames_dir = corpus_dir / 'Frames_Sentence_Level'
+    if sentence_frames_dir.exists() and sentence_details_path:
+        process_sentence_level(sentence_frames_dir, sentence_details_path)
+    else:
+        print("Sentence level data not found or metadata missing")
+
+if __name__ == "__main__":
+    process_dataset()
+    print("Dataset processing complete!")
 ```
 
-### 3. Download and process the dataset
+### 3. Download and process the dataset with alternative methods
 
+Option 1: Use the separated scripts (recommended):
 ```python
-# Download and process the dataset (takes time)
-!python prepare_isl_dataset_fairseq.py --download --process
+# First try to download with retry logic
+!python download_isl_dataset.py
+
+# After download completes, process the data
+!python process_isl_dataset.py
 ```
 
-This will:
-- Download the ISL-CSLRT dataset from Kaggle
-- Extract MediaPipe features from video frames
-- Create train/validation/test splits
-- Generate TSV files for Fairseq
+Option 2: Manual download and upload:
+```python
+# If download keeps failing, manually download from Kaggle and upload to Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Create directory
+!mkdir -p data/raw
+
+# Copy from Drive (adjust path to your uploaded file location)
+!cp /content/drive/MyDrive/path/to/isl-csltr-indian-sign-language-dataset.zip data/raw/
+
+# Extract
+!unzip data/raw/isl-csltr-indian-sign-language-dataset.zip -d data/raw/
+
+# Process (without download)
+!python process_isl_dataset.py
+```
+
+Option 3: For handling large dataset sizes, process in smaller chunks:
+```python
+# Create a script to process only word level data
+%%writefile process_word_only.py
+# Modify process_dataset to only handle word level data
+# ...
+
+# Run it
+!python process_word_only.py
+```
 
 ## Training Tokenizers
 
@@ -261,6 +449,28 @@ For mobile deployment, convert the model to TensorFlow Lite format:
 
 ## Troubleshooting
 
+### Kaggle Download Issues
+
+If the Kaggle dataset download keeps failing:
+
+1. **Direct manual download**:
+   - Download from [ISL-CSLRT Dataset on Kaggle](https://www.kaggle.com/datasets/drblack00/isl-csltr-indian-sign-language-dataset)
+   - Upload to Google Drive
+   - Copy and extract in Colab
+
+2. **Using wget with Kaggle cookies**:
+   ```python
+   # Get download link using Kaggle API
+   import kaggle
+   kaggle.api.authenticate()
+   
+   dataset_info = kaggle.api.dataset_list(search="drblack00/isl-csltr-indian-sign-language-dataset")[0]
+   download_url = f"https://www.kaggle.com/datasets/download/{dataset_info.ref}"
+   
+   # Use wget with cookies
+   !wget --load-cookies ~/.kaggle/cookies.txt -O data/raw/isl-dataset.zip "{download_url}"
+   ```
+
 ### Runtime Disconnections
 Google Colab may disconnect during long-running tasks. To mitigate this:
 
@@ -282,15 +492,6 @@ If MediaPipe fails to install properly:
 ```python
 !pip uninstall -y mediapipe
 !pip install mediapipe==0.10.0
-```
-
-### Dataset Processing Issues
-
-If dataset processing fails, try processing in smaller chunks:
-
-```python
-# Process only word level data
-!python prepare_isl_dataset_fairseq.py --process-word-only
 ```
 
 ### Handling File Persistence

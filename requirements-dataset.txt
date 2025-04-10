@@ -1,0 +1,9 @@
+kaggle
+tqdm
+opencv-python
+albumentations
+torch
+numpy
+matplotlib
+pandas
+openpyxl 

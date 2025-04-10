@@ -1,0 +1,6 @@
+modality: MEDIAPIPE
+process_steps:
+  - type: instance_normalize
+  # Optional: Subsample frames if sequences are too long
+  # - type: subsample
+  #   rate: 2 
